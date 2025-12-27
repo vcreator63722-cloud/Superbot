@@ -16,7 +16,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Final Bot Running!"
+    return "Final Admin Bot Running!"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -31,17 +31,12 @@ def keep_alive():
 dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
 dns.resolver.default_resolver.nameservers = ['8.8.8.8']
 
-# --- YAHAN APNI DETAILS DALEIN (Environment hata diya taaki error na aaye) ---
-API_TOKEN = os.environ.get('BOT_TOKEN') # Render me BOT_TOKEN set karein
-MONGO_URL = os.environ.get('MONGO_URL') # Render me MONGO_URL set karein
+# --- YAHAN APNI DETAILS DALEIN ---
+API_TOKEN = os.environ.get('BOT_TOKEN') 
+MONGO_URL = os.environ.get('MONGO_URL') 
 
-# APNA ADMIN ID YAHAN NUMBER ME LIKHEIN (Example: 1234567890)
-# Agar ID nahi pata to Bot ko /id message bhejein, wo bata dega.
-try:
-    ADMIN_ID = 2145958203
-except:
-    print("❌ ADMIN_ID sahi nahi hai!")
-    ADMIN_ID = 0 
+# 👇 YAHAN APNA TELEGRAM ID NUMBER ME LIKHEIN (Example: 1234567890)
+ADMIN_ID = 2145958203 
 
 try:
     client = MongoClient(MONGO_URL, tls=True, tlsAllowInvalidCertificates=True)
@@ -56,12 +51,23 @@ except Exception as e:
 
 bot = telebot.TeleBot(API_TOKEN) if API_TOKEN else None
 
-# --- SETTINGS ---
+# --- DEFAULT SETTINGS ---
+DEFAULT_EARN_MSG = """
+🤩 **High Paying Tasks**
+
+1️⃣ **Install App & Register**
+💰 Reward: ₹10
+🔗 (( [Click Here](https://google.com) ))
+
+_Complete tasks to fill your wallet fast!_
+"""
+
 DEFAULT_CONFIG = {
     "refer_bonus": 5.0,
     "min_withdraw": 15.0,
     "daily_bonus": 1.0,
-    "tutorial_link": "https://t.me/YourChannel"
+    "tutorial_link": "https://t.me/YourChannel",
+    "earn_more_msg": DEFAULT_EARN_MSG
 }
 
 def get_setting(key):
@@ -69,7 +75,7 @@ def get_setting(key):
     if not conf:
         settings_col.insert_one({"_id": "config", **DEFAULT_CONFIG})
         return DEFAULT_CONFIG[key]
-    return conf.get(key, DEFAULT_CONFIG[key])
+    return conf.get(key, DEFAULT_CONFIG.get(key, ""))
 
 def update_setting(key, value):
     settings_col.update_one({"_id": "config"}, {"$set": {key: value}}, upsert=True)
@@ -107,18 +113,12 @@ def add_new_user(user_id, referrer_id=None):
             except: pass
 
 # ==========================================
-# 3. BOT COMMANDS
+# 3. USER COMMANDS
 # ==========================================
 
-@bot.message_handler(commands=['start', 'id'])
+@bot.message_handler(commands=['start'])
 def start(m):
-    # ANTI-STUCK: Purana koi step ho to cancel karo
     bot.clear_step_handler_by_chat_id(m.chat.id)
-
-    if m.text == "/id":
-        bot.reply_to(m, f"🆔 Your ID: `{m.chat.id}`", parse_mode="Markdown")
-        return
-
     user_id = m.chat.id
     ref_id = None
     try: ref_id = int(m.text.split()[1])
@@ -160,7 +160,6 @@ def main_menu(user_id):
     markup.add("🎁 Bonus", "💸 Withdraw")
     markup.add("🏦 Payout Method", "📍 Earn More")
     
-    # Sirf Admin ko dikhega
     if user_id == ADMIN_ID: markup.add("⚙️ Admin Panel")
     
     tut_link = get_setting("tutorial_link")
@@ -171,10 +170,10 @@ How to Earn : (( [CLICK HERE]({tut_link}) ))
 """
     bot.send_message(user_id, msg, reply_markup=markup, parse_mode="Markdown", disable_web_page_preview=True)
 
-# --- REFER EARN ---
+# --- REFER ---
 @bot.message_handler(func=lambda m: m.text == "🗣 Refer Earn")
 def refer(m):
-    bot.clear_step_handler_by_chat_id(m.chat.id) # FIX
+    bot.clear_step_handler_by_chat_id(m.chat.id)
     bonus = get_setting("refer_bonus")
     link = f"https://t.me/{bot.get_me().username}?start={m.chat.id}"
     msg = f"""
@@ -204,7 +203,7 @@ def lb(c):
 # --- BALANCE ---
 @bot.message_handler(func=lambda m: m.text == "💰 Balance")
 def balance(m):
-    bot.clear_step_handler_by_chat_id(m.chat.id) # FIX
+    bot.clear_step_handler_by_chat_id(m.chat.id)
     u = get_user(m.chat.id)
     msg = f"💰 **Balance:** ₹{u['balance']:.2f}\n\nUse 'Withdraw' button to withdraw your balance to upi"
     markup = types.InlineKeyboardMarkup()
@@ -227,7 +226,7 @@ def bot_fund(c):
 # --- BONUS ---
 @bot.message_handler(func=lambda m: m.text == "🎁 Bonus")
 def bonus_menu(m):
-    bot.clear_step_handler_by_chat_id(m.chat.id) # FIX
+    bot.clear_step_handler_by_chat_id(m.chat.id)
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("📅 Daily Check-in", callback_data="daily_bonus"))
     markup.add(types.InlineKeyboardButton("🎟 Redeem Code", callback_data="redeem_code"))
@@ -263,7 +262,7 @@ def process_code(m):
 # --- PAYOUT METHOD ---
 @bot.message_handler(func=lambda m: m.text == "🏦 Payout Method")
 def payout(m):
-    bot.clear_step_handler_by_chat_id(m.chat.id) # FIX
+    bot.clear_step_handler_by_chat_id(m.chat.id)
     u = get_user(m.chat.id)
     msg = f"**Choose Desired Payment Method From Below 👇**\n\nYour Current UPI - {u.get('payout_details', 'not set')}"
     markup = types.InlineKeyboardMarkup()
@@ -282,7 +281,7 @@ def save_upi(m):
 # --- WITHDRAW ---
 @bot.message_handler(func=lambda m: m.text == "💸 Withdraw")
 def withdraw(m):
-    bot.clear_step_handler_by_chat_id(m.chat.id) # FIX
+    bot.clear_step_handler_by_chat_id(m.chat.id)
     u = get_user(m.chat.id)
     min_wd = get_setting("min_withdraw")
     
@@ -304,42 +303,43 @@ def withdraw(m):
 # --- EARN MORE ---
 @bot.message_handler(func=lambda m: m.text == "📍 Earn More")
 def earn(m):
-    bot.clear_step_handler_by_chat_id(m.chat.id) # FIX
-    tut_link = get_setting("tutorial_link")
-    msg = f"🤩 **Free Loots & Offers**\n\n(( [CLICK HERE]({tut_link}) ))"
+    bot.clear_step_handler_by_chat_id(m.chat.id)
+    # Database se message uthayega
+    msg = get_setting("earn_more_msg")
     bot.reply_to(m, msg, parse_mode="Markdown", disable_web_page_preview=True)
 
 # ==========================================
-# 4. ADMIN PANEL (STRICT & FIXED)
+# 4. ADMIN PANEL (COMPLETE CONTROL)
 # ==========================================
 
 @bot.message_handler(func=lambda m: m.text == "⚙️ Admin Panel")
 def admin_panel(m):
-    # STEP 1: Clear any pending "Enter Paytm" handlers
     bot.clear_step_handler_by_chat_id(m.chat.id)
     
-    # STEP 2: Strict ID Check
     if m.chat.id != ADMIN_ID:
         bot.reply_to(m, "❌ You are not Admin!")
         return
     
     msg = f"""
-👮‍♂️ **Boss Panel**
+👮‍♂️ **Super Admin Panel**
 
 💰 Refer Bonus: ₹{get_setting('refer_bonus')}
+🎁 Daily Bonus: ₹{get_setting('daily_bonus')}
 💸 Min Withdraw: ₹{get_setting('min_withdraw')}
 
-👇 **Select Option:**
+👇 **Tap to Edit:**
 """
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("✏️ Set Refer Bonus", callback_data="adm_set_ref"),
+        types.InlineKeyboardButton("✏️ Set Daily Bonus", callback_data="adm_set_daily"),
         types.InlineKeyboardButton("✏️ Set Min Withdraw", callback_data="adm_set_min"),
-        types.InlineKeyboardButton("✏️ Set Link", callback_data="adm_set_link"),
-        types.InlineKeyboardButton("📢 Broadcast", callback_data="adm_bc"),
+        types.InlineKeyboardButton("✏️ Set Earn More Msg", callback_data="adm_set_earn"),
+        types.InlineKeyboardButton("✏️ Set Tutorial Link", callback_data="adm_set_link"),
+        types.InlineKeyboardButton("🎟 Add Gift Code", callback_data="adm_code"),
         types.InlineKeyboardButton("➕ Add Channel", callback_data="adm_ch"),
         types.InlineKeyboardButton("🗑 Remove Channel", callback_data="adm_rem"),
-        types.InlineKeyboardButton("🎟 Add Gift Code", callback_data="adm_code")
+        types.InlineKeyboardButton("📢 Broadcast", callback_data="adm_bc")
     )
     bot.send_message(m.chat.id, msg, reply_markup=markup, disable_web_page_preview=True, parse_mode="Markdown")
 
@@ -351,6 +351,10 @@ def admin_ops(c):
     if op == "adm_set_ref":
         msg = bot.send_message(ADMIN_ID, "👇 Send New Refer Bonus (e.g. 10):")
         bot.register_next_step_handler(msg, lambda m: [update_setting("refer_bonus", float(m.text)), bot.reply_to(m, "✅ Updated")])
+
+    elif op == "adm_set_daily":
+        msg = bot.send_message(ADMIN_ID, "👇 Send New Daily Bonus (e.g. 2.5):")
+        bot.register_next_step_handler(msg, lambda m: [update_setting("daily_bonus", float(m.text)), bot.reply_to(m, "✅ Updated")])
         
     elif op == "adm_set_min":
         msg = bot.send_message(ADMIN_ID, "👇 Send New Min Withdraw (e.g. 50):")
@@ -359,6 +363,10 @@ def admin_ops(c):
     elif op == "adm_set_link":
         msg = bot.send_message(ADMIN_ID, "👇 Send New Tutorial Link:")
         bot.register_next_step_handler(msg, lambda m: [update_setting("tutorial_link", m.text), bot.reply_to(m, "✅ Updated")])
+
+    elif op == "adm_set_earn":
+        msg = bot.send_message(ADMIN_ID, "👇 Send New 'Earn More' Message (Supports Markdown):")
+        bot.register_next_step_handler(msg, lambda m: [update_setting("earn_more_msg", m.text), bot.reply_to(m, "✅ Updated")])
         
     elif op == "adm_ch":
         msg = bot.send_message(ADMIN_ID, "Send Channel: `@username` OR `-100ID Link Name`")
