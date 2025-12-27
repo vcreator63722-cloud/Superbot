@@ -7,16 +7,15 @@ import dns.resolver
 from flask import Flask
 from threading import Thread
 import os
-import random
 
 # ==========================================
-# 1. SERVER KEEP ALIVE
+# 1. SERVER (24/7 Alive)
 # ==========================================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Ultra Pro Bot Running!"
+    return "Professional Bot Live!"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -26,7 +25,7 @@ def keep_alive():
     t.start()
 
 # ==========================================
-# 2. CONFIGURATION
+# 2. DATABASE & CONFIG
 # ==========================================
 dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
 dns.resolver.default_resolver.nameservers = ['8.8.8.8']
@@ -35,50 +34,41 @@ API_TOKEN = os.environ.get('BOT_TOKEN')
 MONGO_URL = os.environ.get('MONGO_URL')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '1234567890'))
 
-# --- IMAGES (Inhe aap change kar sakte hain) ---
-IMG_WELCOME = "https://i.ibb.co/hR5W0z3/welcome.jpg" # Koi bhi image link dalein
-IMG_BALANCE = "https://i.ibb.co/vzD3Xj0/wallet.jpg"  # Wallet icon link
-
-# --- SETTINGS ---
-CURRENCY = "₹"
-PER_REFER_BONUS = 5.0
-DAILY_BONUS_AMOUNT = 1.0
-MIN_WITHDRAW = 15.0
-SIGNUP_BONUS = 2.0 
-FAKE_BOT_FUND = 58000.0
-
 try:
-    if not MONGO_URL: print("❌ MONGO_URL Missing")
     client = MongoClient(MONGO_URL, tls=True, tlsAllowInvalidCertificates=True)
     db = client['TelegramBotDB']
     users_col = db['users']
     withdraw_col = db['withdrawals']
     channels_col = db['channels']
-    gift_codes_col = db['gift_codes']
-    tasks_col = db['tasks']
+    settings_col = db['settings'] # Naya: Settings save karne ke liye
 except Exception as e:
     print(f"DB Error: {e}")
 
 bot = telebot.TeleBot(API_TOKEN) if API_TOKEN else None
 
+# --- DEFAULT SETTINGS (Agar DB me nahi hai to ye use honge) ---
+DEFAULT_CONFIG = {
+    "refer_bonus": 5.0,
+    "min_withdraw": 15.0,
+    "daily_bonus": 1.0,
+    "tutorial_link": "https://t.me/YourChannel", # How to earn link
+    "currency": "₹"
+}
+
+def get_setting(key):
+    conf = settings_col.find_one({"_id": "config"})
+    if not conf:
+        settings_col.insert_one({"_id": "config", **DEFAULT_CONFIG})
+        return DEFAULT_CONFIG[key]
+    return conf.get(key, DEFAULT_CONFIG[key])
+
+def update_setting(key, value):
+    settings_col.update_one({"_id": "config"}, {"$set": {key: value}}, upsert=True)
+
 # --- HELPER FUNCTIONS ---
 
 def get_user(user_id):
-    # Safe User Fetching (Crash Fix)
-    u = users_col.find_one({"user_id": user_id})
-    if not u: return None
-    
-    # Auto-Repair: Agar purane user me naye fields nahi hain to add karo
-    updates = {}
-    if 'total_earned' not in u: updates['total_earned'] = 0.0
-    if 'payout_method' not in u: updates['payout_method'] = "Not Set"
-    if 'payout_details' not in u: updates['payout_details'] = "Not Set"
-    if 'completed_tasks' not in u: updates['completed_tasks'] = []
-    
-    if updates:
-        users_col.update_one({"user_id": user_id}, {"$set": updates})
-        return users_col.find_one({"user_id": user_id}) # Refresh
-    return u
+    return users_col.find_one({"user_id": user_id})
 
 def check_joined(user_id):
     channels = list(channels_col.find({}))
@@ -95,20 +85,18 @@ def add_new_user(user_id, referrer_id=None):
     if not users_col.find_one({"user_id": user_id}):
         users_col.insert_one({
             "user_id": user_id,
-            "balance": SIGNUP_BONUS,
+            "balance": 0.0,
             "referrals": 0,
-            "total_earned": 0.0,
             "joined_date": datetime.datetime.now(),
             "last_bonus": 0,
             "payout_method": "Not Set",
-            "payout_details": "Not Set",
-            "completed_tasks": []
+            "payout_details": "Not Set"
         })
+        # Refer Logic
+        bonus = get_setting("refer_bonus")
         if referrer_id and referrer_id != user_id:
-            users_col.update_one({"user_id": referrer_id}, {
-                "$inc": {"balance": PER_REFER_BONUS, "referrals": 1, "total_earned": PER_REFER_BONUS}
-            })
-            try: bot.send_message(referrer_id, f"🎉 **New Referral!**\nYou earned {CURRENCY}{PER_REFER_BONUS}", parse_mode="Markdown")
+            users_col.update_one({"user_id": referrer_id}, {"$inc": {"balance": bonus, "referrals": 1}})
+            try: bot.send_message(referrer_id, f"🎉 **New Referral!**\nYou earned ₹{bonus}", parse_mode="Markdown")
             except: pass
 
 # ==========================================
@@ -124,19 +112,27 @@ def start(m):
     
     add_new_user(user_id, ref_id)
     
+    # Text aur Link Database se aayega
+    tut_link = get_setting("tutorial_link")
+    
     pending = check_joined(user_id)
     if pending:
-        markup = types.InlineKeyboardMarkup()
+        # EXACT TEXT JO AAPNE MANGA
+        msg = f"""
+🏡 **Welcome To UPI Giveaway Bot!**
+
+How to Earn : (( [CLICK HERE]({tut_link}) ))
+
+🛑 **Must Join Total Channel To Use Our Bot**
+👇 **After Joining Click Claim**
+"""
+        markup = types.InlineKeyboardMarkup(row_width=2)
         for ch in pending:
             markup.add(types.InlineKeyboardButton(f"Join {ch['name']}", url=ch['link']))
-        markup.add(types.InlineKeyboardButton("✅ Joined (Check)", callback_data="check_join"))
+        markup.add(types.InlineKeyboardButton("🔒 Claim Reward", callback_data="check_join"))
         
-        msg = f"👋 **Welcome User!**\n\n🛑 **Access Denied:** You must join our channels to use the bot."
-        # Image ke sath bhejna
-        try:
-            bot.send_photo(user_id, IMG_WELCOME, caption=msg, reply_markup=markup, parse_mode="Markdown")
-        except:
-            bot.send_message(user_id, msg, reply_markup=markup, parse_mode="Markdown")
+        # Link preview disable taki message clean dikhe
+        bot.send_message(user_id, msg, reply_markup=markup, parse_mode="Markdown", disable_web_page_preview=True)
     else:
         main_menu(user_id)
 
@@ -144,264 +140,217 @@ def start(m):
 def check_join_btn(c):
     if not check_joined(c.message.chat.id):
         bot.delete_message(c.message.chat.id, c.message.message_id)
+        bot.answer_callback_query(c.id, "✅ Verified!", show_alert=False)
         main_menu(c.message.chat.id)
     else:
         bot.answer_callback_query(c.id, "❌ Join all channels first!", show_alert=True)
 
 def main_menu(user_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    # Exactly matching button text for handlers
     markup.add("💰 Balance", "🗣 Refer Earn")
     markup.add("🎁 Bonus", "💸 Withdraw")
     markup.add("🏦 Payout Method", "📍 Earn More")
     
     if user_id == ADMIN_ID: markup.add("⚙️ Admin Panel")
     
-    msg = f"🏡 **Dashboard**\n\n🆔 ID: `{user_id}`\n🚀 **Start Earning Today!**\n\n👇 Choose an option below:"
-    bot.send_message(user_id, msg, reply_markup=markup, parse_mode="Markdown")
+    tut_link = get_setting("tutorial_link")
+    msg = f"""
+👋 **Hey There User Welcome To Bot!**
 
-# --- 1. BALANCE (FIXED & PROFESSIONAL) ---
-@bot.message_handler(func=lambda m: m.text == "💰 Balance")
-def balance(m):
-    try:
-        u = get_user(m.chat.id) # Safe fetch
-        if not u:
-            bot.reply_to(m, "❌ Error loading profile. Type /start")
-            return
-
-        msg = f"""
-💰 **Your Wallet Dashboard**
-
-👤 **User:** {m.chat.first_name}
-🆔 **ID:** `{m.chat.id}`
-
-💵 **Current Balance:** `{CURRENCY}{u.get('balance', 0):.2f}`
-📊 **Total Earned:** `{CURRENCY}{u.get('total_earned', 0):.2f}`
-
-_Refer friends to earn more!_
+How to Earn : (( [CLICK HERE]({tut_link}) ))
 """
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📜 History", callback_data="history"),
-                   types.InlineKeyboardButton("🏦 Bot Fund", callback_data="bot_fund"))
-        
-        # Try sending photo, if fails (bad url), send text
-        try:
-            bot.send_photo(m.chat.id, IMG_BALANCE, caption=msg, reply_markup=markup, parse_mode="Markdown")
-        except:
-            bot.reply_to(m, msg, reply_markup=markup, parse_mode="Markdown")
-            
-    except Exception as e:
-        bot.reply_to(m, "❌ System Error. Try /start again.")
+    bot.send_message(user_id, msg, reply_markup=markup, parse_mode="Markdown", disable_web_page_preview=True)
 
-@bot.callback_query_handler(func=lambda c: c.data == "history")
-def history(c):
-    txs = list(withdraw_col.find({"user_id": c.message.chat.id}).sort("date", -1).limit(5))
-    msg = "📜 **Recent Transactions:**\n\n"
-    if not txs: msg += "No history found."
-    
-    for tx in txs:
-        icon = "✅" if tx['status'] == "Paid" else "❌" if tx['status'] == "Rejected" else "⏳"
-        msg += f"{icon} **{CURRENCY}{tx['amount']}** | {tx['status']}\n"
-    
-    bot.send_message(c.message.chat.id, msg, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda c: c.data == "bot_fund")
-def bot_fund(c):
-    amt = FAKE_BOT_FUND + random.randint(100, 9999)
-    msg = f"🏦 **Bot Treasury Fund**\n\n💰 Live Balance: **{CURRENCY}{amt:,.2f}**\n✅ Status: **PAYING INSTANTLY** 🔥"
-    bot.answer_callback_query(c.id, "Checking Server...")
-    bot.send_message(c.message.chat.id, msg, parse_mode="Markdown")
-
-# --- 2. REFER ---
+# --- REFER EARN (EXACT TEXT) ---
 @bot.message_handler(func=lambda m: m.text == "🗣 Refer Earn")
 def refer(m):
+    bonus = get_setting("refer_bonus")
     link = f"https://t.me/{bot.get_me().username}?start={m.chat.id}"
+    
+    # EXACT TEXT JO AAPNE MANGA
     msg = f"""
-📣 **Refer & Earn Program**
+💰 **Per Refer Rs.{bonus} Upi Cash**
 
-🎁 **Per Refer:** {CURRENCY}{PER_REFER_BONUS}
-👥 **Your Invites:** {get_user(m.chat.id).get('referrals', 0)}
+👤 **Your Refferal Link:** {link}
 
-🔗 **Your Link:**
-`{link}`
-
-_Share this link to earn unlimited cash!_
+Share With Your Friend's & Family And Earn Refer Bonus Easily ✨🤑
 """
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard"))
-    bot.send_message(m.chat.id, msg, reply_markup=markup, parse_mode="Markdown")
+    markup.add(types.InlineKeyboardButton("✨ My Invites", callback_data="my_invites"),
+               types.InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard"))
+    
+    bot.reply_to(m, msg, reply_markup=markup, disable_web_page_preview=True)
+
+@bot.callback_query_handler(func=lambda c: c.data == "my_invites")
+def invites(c):
+    u = get_user(c.message.chat.id)
+    bot.answer_callback_query(c.id, f"Total Invites: {u['referrals']}", show_alert=True)
 
 @bot.callback_query_handler(func=lambda c: c.data == "leaderboard")
 def lb(c):
     tops = users_col.find().sort("referrals", -1).limit(10)
-    msg = "🏆 **Top 10 Leaders** 🏆\n\n"
-    for i, u in enumerate(tops):
-        msg += f"#{i+1} 🆔 `{str(u['user_id'])[:4]}..` - {u['referrals']} Refs\n"
-    bot.send_message(c.message.chat.id, msg, parse_mode="Markdown")
+    msg = "🏆 **Leaderboard**\n"
+    for i, u in enumerate(tops): msg += f"#{i+1} - {u['referrals']} Refs\n"
+    bot.send_message(c.message.chat.id, msg)
 
-# --- 3. BONUS ---
-@bot.message_handler(func=lambda m: m.text == "🎁 Bonus")
-def bonus_menu(m):
+# --- BALANCE ---
+@bot.message_handler(func=lambda m: m.text == "💰 Balance")
+def balance(m):
+    u = get_user(m.chat.id)
+    msg = f"💰 **Balance:** ₹{u['balance']:.2f}\n\nUse 'Withdraw' button to withdraw your balance to upi"
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("📅 Claim Daily Bonus", callback_data="daily_bonus"))
-    markup.add(types.InlineKeyboardButton("🎟 Redeem Promo Code", callback_data="redeem_code"))
-    bot.reply_to(m, "🎁 **Bonus Zone**\nChoose an option:", reply_markup=markup)
+    markup.add(types.InlineKeyboardButton("Withdraw History 📊", callback_data="history"))
+    bot.reply_to(m, msg, reply_markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda c: c.data == "daily_bonus")
-def claim_daily(c):
-    uid = c.message.chat.id
-    u = get_user(uid)
+@bot.callback_query_handler(func=lambda c: c.data == "history")
+def history(c):
+    txs = list(withdraw_col.find({"user_id": c.message.chat.id}).sort("date", -1).limit(5))
+    msg = "📜 **Withdraw History**\n"
+    for t in txs: msg += f"₹{t['amount']} | {t['status']}\n"
+    bot.send_message(c.message.chat.id, msg if txs else "No history.")
+
+# --- BONUS ---
+@bot.message_handler(func=lambda m: m.text == "🎁 Bonus")
+def bonus(m):
+    u = get_user(m.chat.id)
     now = time.time()
+    amt = get_setting("daily_bonus")
     if now - u.get('last_bonus', 0) > 86400:
-        users_col.update_one({"user_id": uid}, {"$inc": {"balance": DAILY_BONUS_AMOUNT}, "$set": {"last_bonus": now}})
-        bot.answer_callback_query(c.id, f"✅ Claimed {CURRENCY}{DAILY_BONUS_AMOUNT}!", show_alert=True)
+        users_col.update_one({"user_id": m.chat.id}, {"$inc": {"balance": amt}, "$set": {"last_bonus": now}})
+        bot.reply_to(m, f"✅ **Daily Bonus Claimed!**\nReceived ₹{amt}")
     else:
-        bot.answer_callback_query(c.id, "⏳ Come back tomorrow!", show_alert=True)
+        bot.reply_to(m, "⏳ Come back tomorrow!")
 
-@bot.callback_query_handler(func=lambda c: c.data == "redeem_code")
-def redeem_ask(c):
-    msg = bot.send_message(c.message.chat.id, "🎟 **Send your Promo Code:**")
-    bot.register_next_step_handler(msg, process_code)
-
-def process_code(m):
-    code = m.text.strip()
-    gift = gift_codes_col.find_one({"code": code})
-    if gift and gift['users_used'] < gift['limit']:
-        if m.chat.id not in gift['used_by']:
-            users_col.update_one({"user_id": m.chat.id}, {"$inc": {"balance": gift['amount']}})
-            gift_codes_col.update_one({"code": code}, {"$inc": {"users_used": 1}, "$push": {"used_by": m.chat.id}})
-            bot.reply_to(m, f"✅ **Success!** Added {CURRENCY}{gift['amount']}")
-        else: bot.reply_to(m, "❌ Already used!")
-    else: bot.reply_to(m, "❌ Invalid/Expired Code")
-
-# --- 4. PAYOUT METHOD ---
+# --- PAYOUT METHOD ---
 @bot.message_handler(func=lambda m: m.text == "🏦 Payout Method")
 def payout(m):
     u = get_user(m.chat.id)
-    msg = f"💳 **Wallet Settings**\n\nActive: **{u.get('payout_method', 'None')}**\nDetails: `{u.get('payout_details', 'None')}`"
+    msg = f"**Choose Desired Payment Method From Below 👇**\n\nYour Current UPI - {u.get('payout_details', 'not set')}"
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("Set UPI", callback_data="set_upi"),
-               types.InlineKeyboardButton("Set Paytm", callback_data="set_paytm"))
+    markup.add(types.InlineKeyboardButton("🏦 Set UPI ID", callback_data="set_upi"))
     bot.reply_to(m, msg, reply_markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("set_"))
-def set_w(c):
-    method = "UPI" if "upi" in c.data else "Paytm"
-    msg = bot.send_message(c.message.chat.id, f"👇 **Enter {method} ID:**")
-    bot.register_next_step_handler(msg, lambda mm: save_w(mm, method))
+@bot.callback_query_handler(func=lambda c: c.data == "set_upi")
+def setupi(c):
+    msg = bot.send_message(c.message.chat.id, "👇 **Send your UPI ID:**")
+    bot.register_next_step_handler(msg, save_upi)
 
-def save_w(m, method):
-    users_col.update_one({"user_id": m.chat.id}, {"$set": {"payout_method": method, "payout_details": m.text}})
-    bot.reply_to(m, f"✅ **Saved:** {m.text}")
+def save_upi(m):
+    users_col.update_one({"user_id": m.chat.id}, {"$set": {"payout_method": "UPI", "payout_details": m.text}})
+    bot.reply_to(m, "✅ UPI Set Successfully!")
 
-# --- 5. WITHDRAW ---
+# --- WITHDRAW ---
 @bot.message_handler(func=lambda m: m.text == "💸 Withdraw")
 def withdraw(m):
     u = get_user(m.chat.id)
-    bal = u.get('balance', 0)
+    min_wd = get_setting("min_withdraw")
     
-    if bal < MIN_WITHDRAW:
-        bot.reply_to(m, f"❌ **Insufficient Funds**\nMin Withdraw: {CURRENCY}{MIN_WITHDRAW}")
+    if u['balance'] < min_wd:
+        bot.reply_to(m, f"🤑 **You need minimum ₹{min_wd} in balance to withdraw**")
         return
     if u.get('payout_method') == "Not Set":
-        bot.reply_to(m, "❌ **Wallet Not Set!**\nGo to 'Payout Method' first.")
+        bot.reply_to(m, "❌ Set Payout Method First!")
         return
-
+    
     users_col.update_one({"user_id": m.chat.id}, {"$set": {"balance": 0}})
-    withdraw_col.insert_one({
-        "user_id": m.chat.id, "amount": bal, "method": u['payout_method'],
-        "details": u['payout_details'], "status": "Pending", "date": datetime.datetime.now()
-    })
+    withdraw_col.insert_one({"user_id": m.chat.id, "amount": u['balance'], "details": u['payout_details'], "status": "Pending", "date": datetime.datetime.now()})
     
-    # Notify Admin
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("✅ Pay", callback_data=f"pay_yes_{m.chat.id}_{bal}"),
-               types.InlineKeyboardButton("❌ Reject", callback_data=f"pay_no_{m.chat.id}_{bal}"))
-    bot.send_message(ADMIN_ID, f"🔔 **Withdraw Request**\nUser: `{m.chat.id}`\nAmt: {CURRENCY}{bal}\nTo: `{u['payout_details']}`", reply_markup=markup, parse_mode="Markdown")
-    
-    bot.reply_to(m, "✅ **Request Submitted!**\nAdmin will process it soon.")
+    mark = types.InlineKeyboardMarkup()
+    mark.add(types.InlineKeyboardButton("✅ Pay", callback_data=f"py_{m.chat.id}_{u['balance']}"), types.InlineKeyboardButton("❌ Reject", callback_data=f"pn_{m.chat.id}_{u['balance']}"))
+    bot.send_message(ADMIN_ID, f"🔔 Withdraw: ₹{u['balance']}\nUPI: `{u['payout_details']}`", reply_markup=mark, parse_mode="Markdown")
+    bot.reply_to(m, "✅ Request Submitted.")
 
-# --- 6. ADMIN & EXTRAS ---
+# --- EARN MORE ---
+@bot.message_handler(func=lambda m: m.text == "📍 Earn More")
+def earn(m):
+    tut_link = get_setting("tutorial_link")
+    msg = f"🤩 **Free Loots & Offers**\n\n(( [CLICK HERE]({tut_link}) ))"
+    bot.reply_to(m, msg, parse_mode="Markdown", disable_web_page_preview=True)
+
+# ==========================================
+# 4. ADMIN PANEL (MANAGE EVERYTHING)
+# ==========================================
+
 @bot.message_handler(func=lambda m: m.text == "⚙️ Admin Panel")
 def admin(m):
     if m.chat.id != ADMIN_ID: return
+    
+    msg = f"""
+👮‍♂️ **Boss Panel**
+
+Current Settings:
+💰 Refer Bonus: ₹{get_setting('refer_bonus')}
+💸 Min Withdraw: ₹{get_setting('min_withdraw')}
+🔗 Link: {get_setting('tutorial_link')}
+
+👇 **Select what to change:**
+"""
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
+        types.InlineKeyboardButton("✏️ Set Refer Bonus", callback_data="set_ref"),
+        types.InlineKeyboardButton("✏️ Set Min Withdraw", callback_data="set_min"),
+        types.InlineKeyboardButton("✏️ Set Link", callback_data="set_link"),
         types.InlineKeyboardButton("📢 Broadcast", callback_data="adm_bc"),
         types.InlineKeyboardButton("➕ Add Channel", callback_data="adm_ch"),
-        types.InlineKeyboardButton("🎟 Add Code", callback_data="adm_code"),
-        types.InlineKeyboardButton("📊 Stats", callback_data="adm_stats")
+        types.InlineKeyboardButton("🗑 Remove Channel", callback_data="adm_rem")
     )
-    bot.reply_to(m, "👮‍♂️ **Admin Panel**", reply_markup=markup)
+    bot.send_message(m.chat.id, msg, reply_markup=markup, disable_web_page_preview=True)
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("adm_"))
-def adm_act(c):
-    op = c.data.split("_")[1]
-    if op == "ch":
-        msg = bot.send_message(ADMIN_ID, "Send: `@username` OR `-100ID Link Name`")
-        bot.register_next_step_handler(msg, add_ch_logic)
-    elif op == "code":
-        msg = bot.send_message(ADMIN_ID, "Send: `CODE AMOUNT LIMIT`")
-        bot.register_next_step_handler(msg, add_code_logic)
-    elif op == "stats":
-        u = users_col.count_documents({})
-        w = withdraw_col.count_documents({"status": "Paid"})
-        bot.send_message(ADMIN_ID, f"📊 Users: {u}\n✅ Paid WDs: {w}")
-    elif op == "bc":
-        msg = bot.send_message(ADMIN_ID, "Send Broadcast Msg:")
+@bot.callback_query_handler(func=lambda c: c.data.startswith("adm_") or c.data.startswith("set_"))
+def admin_ops(c):
+    if c.message.chat.id != ADMIN_ID: return
+    op = c.data
+    
+    if op == "set_ref":
+        msg = bot.send_message(ADMIN_ID, "👇 Send New Refer Bonus Amount (e.g. 10):")
+        bot.register_next_step_handler(msg, lambda m: [update_setting("refer_bonus", float(m.text)), bot.reply_to(m, "✅ Updated")])
+        
+    elif op == "set_min":
+        msg = bot.send_message(ADMIN_ID, "👇 Send New Min Withdraw Amount (e.g. 50):")
+        bot.register_next_step_handler(msg, lambda m: [update_setting("min_withdraw", float(m.text)), bot.reply_to(m, "✅ Updated")])
+        
+    elif op == "set_link":
+        msg = bot.send_message(ADMIN_ID, "👇 Send New 'How to Earn' Link:")
+        bot.register_next_step_handler(msg, lambda m: [update_setting("tutorial_link", m.text), bot.reply_to(m, "✅ Updated")])
+        
+    elif op == "adm_ch":
+        msg = bot.send_message(ADMIN_ID, "Send Channel: `@username` OR `-100ID Link Name`")
+        bot.register_next_step_handler(msg, add_channel_db)
+        
+    elif op == "adm_rem":
+        msg = bot.send_message(ADMIN_ID, "Send ID/@username to remove:")
+        bot.register_next_step_handler(msg, lambda m: [channels_col.delete_one({"chat_id": m.text}), bot.reply_to(m, "✅ Removed")])
+
+    elif op == "adm_bc":
+        msg = bot.send_message(ADMIN_ID, "Send Message to Broadcast:")
         bot.register_next_step_handler(msg, lambda m: [bot.copy_message(u['user_id'], m.chat.id, m.message_id) for u in users_col.find({})])
 
-def add_ch_logic(m):
-    txt = m.text
-    if txt.startswith("@"):
-        channels_col.insert_one({"chat_id": txt, "link": f"https://t.me/{txt.replace('@','')}", "name": txt})
-    else:
-        try:
-            p = txt.split()
-            channels_col.insert_one({"chat_id": p[0], "link": p[1], "name": " ".join(p[2:])})
-        except: return
-    bot.reply_to(m, "✅ Added")
+def add_channel_db(m):
+    text = m.text
+    if text.startswith("@"):
+        channels_col.insert_one({"chat_id": text, "link": f"https://t.me/{text.replace('@','')}", "name": text})
+    elif text.startswith("-100"):
+        p = text.split()
+        channels_col.insert_one({"chat_id": p[0], "link": p[1], "name": " ".join(p[2:])})
+    bot.reply_to(m, "✅ Channel Added")
 
-def add_code_logic(m):
-    try:
-        p = m.text.split()
-        gift_codes_col.insert_one({"code": p[0], "amount": float(p[1]), "limit": int(p[2]), "users_used": 0, "used_by": []})
-        bot.reply_to(m, "✅ Added")
-    except: pass
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
-def pay_proc(c):
+# Admin Pay Logic
+@bot.callback_query_handler(func=lambda c: c.data.startswith("py_") or c.data.startswith("pn_"))
+def pay_logic(c):
     if c.message.chat.id != ADMIN_ID: return
-    act, uid, amt = c.data.split("_")[1], int(c.data.split("_")[2]), float(c.data.split("_")[3])
-    if act == "yes":
+    act, uid, amt = c.data[:2], int(c.data.split("_")[1]), float(c.data.split("_")[2])
+    if act == "py":
         withdraw_col.update_one({"user_id": uid, "status": "Pending"}, {"$set": {"status": "Paid"}})
         bot.edit_message_text(f"✅ Paid {uid}", c.message.chat.id, c.message.message_id)
-        try: bot.send_message(uid, f"✅ **Payment Received!**\n{CURRENCY}{amt} sent successfully.")
+        try: bot.send_message(uid, f"✅ Payment Received: ₹{amt}")
         except: pass
     else:
         users_col.update_one({"user_id": uid}, {"$inc": {"balance": amt}})
         withdraw_col.update_one({"user_id": uid, "status": "Pending"}, {"$set": {"status": "Rejected"}})
         bot.edit_message_text(f"❌ Rejected {uid}", c.message.chat.id, c.message.message_id)
-        try: bot.send_message(uid, f"❌ **Withdrawal Failed.** Refunded.")
+        try: bot.send_message(uid, "❌ Payment Rejected. Refunded.")
         except: pass
-
-@bot.message_handler(func=lambda m: m.text == "📍 Earn More")
-def earn(m):
-    # Dummy Links (Change these)
-    msg = """
-🔥 **Exclusive Loots (Instant Payment)**
-
-1️⃣ **Task 1: Install & Register** (₹10)
-🔗 [Click Here](https://google.com)
-
-2️⃣ **Task 2: Join Channel** (₹5)
-🔗 [Click Here](https://google.com)
-
-_Complete tasks to earn extra income!_
-"""
-    bot.reply_to(m, msg, parse_mode="Markdown")
 
 keep_alive()
 if API_TOKEN:
-    print("Bot Started...")
     bot.infinity_polling()
