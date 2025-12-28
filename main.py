@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Full Power Bot Running!"
+    return "Bot Fixed & Running!"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -82,7 +82,6 @@ def update_setting(key, value):
 def get_user(user_id, first_name="User"):
     u = users_col.find_one({"user_id": user_id})
     if not u: return None
-    # Auto-Repair
     if 'total_earned' not in u: users_col.update_one({"user_id": user_id}, {"$set": {"total_earned": 0.0}})
     return u
 
@@ -179,7 +178,10 @@ def main_menu(user_id):
 
 How to Earn : (( [CLICK HERE]({tut_link}) ))
 """
-    bot.send_message(user_id, msg, reply_markup=markup, parse_mode="Markdown", disable_web_page_preview=True)
+    try:
+        bot.send_message(user_id, msg, reply_markup=markup, parse_mode="Markdown", disable_web_page_preview=True)
+    except:
+        bot.send_message(user_id, msg, reply_markup=markup, parse_mode=None, disable_web_page_preview=True)
 
 # --- REFER EARN ---
 @bot.message_handler(func=lambda m: m.text == "🗣 Refer Earn")
@@ -306,12 +308,17 @@ def withdraw(m):
     except: pass
     bot.reply_to(m, "✅ Request Submitted.")
 
-# --- EARN MORE ---
+# --- EARN MORE (FIXED) ---
 @bot.message_handler(func=lambda m: m.text == "📍 Earn More")
 def earn(m):
     if not is_verified(m): return
     msg = get_setting("earn_more_msg")
-    bot.reply_to(m, msg, parse_mode="Markdown", disable_web_page_preview=True)
+    
+    # Try sending with Markdown, if fail then send Normal
+    try:
+        bot.reply_to(m, msg, parse_mode="Markdown", disable_web_page_preview=True)
+    except:
+        bot.reply_to(m, msg, parse_mode=None, disable_web_page_preview=True)
 
 # ==========================================
 # 4. ADMIN PANEL (ALL FEATURES BACK)
@@ -366,7 +373,7 @@ def admin_ops(c):
         bot.register_next_step_handler(msg, lambda m: [update_setting("tutorial_link", m.text), bot.reply_to(m, "✅ Updated")])
 
     elif op == "adm_set_earn":
-        msg = bot.send_message(ADMIN_ID, "👇 Send New 'Earn More' Msg (Markdown OK):")
+        msg = bot.send_message(ADMIN_ID, "👇 Send New 'Earn More' Msg (Markdown Allowed):")
         bot.register_next_step_handler(msg, lambda m: [update_setting("earn_more_msg", m.text), bot.reply_to(m, "✅ Updated")])
         
     elif op == "adm_ch":
